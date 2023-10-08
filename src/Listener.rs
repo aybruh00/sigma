@@ -1,4 +1,6 @@
+use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
+use crate::proxy::HttpProxyTunnel;
 
 pub struct Manager {
     ips: Vec<String>,
@@ -16,14 +18,13 @@ impl Manager{
 
         loop{
             let (conn_sock, _conn_addr) = listener.accept().await.unwrap();
-            println!("Connected {:?}", _conn_addr);
-            tokio::spawn(async move {
-                Self::process(conn_sock);
-            });
+            println!("Connected from {:?}", _conn_addr);
+            Self::process(conn_sock, _conn_addr);
         }
     }
 
-    fn process(_socket: TcpStream){
-
+    fn process(_socket: TcpStream, _addr: SocketAddr){
+        // let mut buf = [0u8; 2048];
+        // _socket.peek(&mut buf).await;
     }
 }

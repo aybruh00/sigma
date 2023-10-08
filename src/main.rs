@@ -1,6 +1,8 @@
 use std::env;
+use listener::Manager;
 
 mod listener;
+mod proxy;
 
 #[tokio::main]
 async fn main() {
@@ -9,7 +11,7 @@ async fn main() {
     ips.next();
     let ips: Vec<String> = ips.collect();
 
-    let listener = listener::Manager::new(ips, 9080 as u32);
+    let listener = Manager::new(ips, 9080 as u32);
     listener.listen().await;
 
     // println!("{:?}", ips);
