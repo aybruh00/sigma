@@ -1,24 +1,24 @@
 use std::net::SocketAddr::{V4, V6};
 use tokio::net::{TcpSocket, TcpStream, lookup_host};
 use tokio::io::copy;
+// use tokio::time::Instant;
 
 pub struct HttpProxyTunnel {
-    incoming_sock: TcpStream,
-    incoming_remote_addr: String,
-    // mut outgoingSock: Option<TcpStream>,
-    outgoing_local_addr: String,
-    buf: [u8; 4096]
+    pub incoming_sock: TcpStream,
+    pub incoming_remote_addr: String,
+    pub outgoing_local_addr: String,
+    pub buf: Box<[u8; 4096]>
 }
 
 impl HttpProxyTunnel {
     pub async fn start(&mut self) {
-        // let mut client_remote_buf: [u8] = [0u8; 4096];
-        self.read_from_client().await; // (&mut client_remote_buf);
+        self.read_from_client().await; 
     } 
 
-    async fn connect_remote //<E: std::convert::From<std::io::Error>> 
-    (&self, hostname: &str) -> Result<TcpStream, std::io::Error> {
-        for host in lookup_host(hostname).await? {
+    async fn connect_remote(&self, hostname: &str) -> Result<TcpStream, std::io::Error> {
+        println!("{hostname}");
+        for host in lookup_host(String::from(hostname)+":80").await? {
+            println!("{:?}", host);
             match host {
                 V4(_) => {
                     let remote_sock = TcpSocket::new_v4()?;
@@ -26,6 +26,7 @@ impl HttpProxyTunnel {
                     return remote_sock.connect(host).await;
                 }
                 V6(_) => {
+                    continue;
                     let remote_sock = TcpSocket::new_v6()?;
                     remote_sock.bind((self.outgoing_local_addr.clone()+":0").parse().unwrap());
                     return remote_sock.connect(host).await;
@@ -37,7 +38,7 @@ impl HttpProxyTunnel {
 
     async fn read_from_client(&mut self) {
         loop{
-            match self.incoming_sock.try_read(&mut (self.buf)) {
+            match self.incoming_sock.try_read(&mut (*self.buf)) {
                 Ok(0) => break,
                 Ok(n) => {
                     self.process_request(n).await;
@@ -65,6 +66,7 @@ impl HttpProxyTunnel {
                 if &self.buf[i..i+2] == b"\r\n" {
                     endl_idx = i;
                     endl_found = true;
+                    break;
                 }
             }
         }
@@ -73,12 +75,16 @@ impl HttpProxyTunnel {
             let hostname = std::str::from_utf8(&self.buf[host_name_idx..endl_idx]).unwrap();
             let mut remote_sock = self.connect_remote(hostname).await.unwrap();
             let mut bytes_written = 0;
+            let (mut remote_read, mut remote_write) = remote_sock.split();
+            let (mut client_read, mut client_write) = self.incoming_sock.split();
             while bytes_written < bytes {
-                bytes_written += remote_sock.try_write(&self.buf[bytes_written..bytes]).unwrap();
+                bytes_written += remote_write.try_write(&self.buf[bytes_written..bytes]).unwrap();
             }
 
-            let (mut remote_read, mut client_write) = (remote_sock.split().0, self.incoming_sock.split().1);
+            // let now = Instant::now();
             copy(&mut remote_read, &mut client_write).await;
+            // let etime = now.elapsed();
+            // println!("copy took {} seconds", etime.as_secs());
         }
     }
 }
