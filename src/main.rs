@@ -1,3 +1,4 @@
+#![feature(cell_leak)]
 use std::env;
 use listener::Manager;
 
