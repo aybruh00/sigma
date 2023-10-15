@@ -1,18 +1,21 @@
 use std::net::SocketAddr;
+use std::str::FromStr;
 use tokio::net::{TcpListener, TcpStream};
 use crate::proxy::HttpProxyTunnel;
 
 pub struct Manager {
-    ips: Vec<String>,
+    ips: Vec<SocketAddr>,
     listener_port: u16
 }
 
 impl Manager{
     pub fn new(ips: Vec<String>, port: u16) -> Manager{
-        Manager{ips: ips, listener_port: port}
+        let ip_addrs: Vec<SocketAddr> = ips.into_iter().map(|ip| SocketAddr::from_str(&(ip + ":0")[..]).unwrap()).collect();
+
+        Manager{ips: ip_addrs, listener_port: port}
     }
 
-    pub async fn listen(&self) {
+    pub async fn listen(self) {
 
         let listener = TcpListener::bind(format!("{}:{}", "0.0.0.0", self.listener_port)).await.unwrap();
         let mut idx = 0;
@@ -30,15 +33,11 @@ impl Manager{
     }
 }
 
-async fn process(_socket: TcpStream, _addr: SocketAddr, local_addr: String){
+async fn process(_socket: TcpStream, _addr: SocketAddr, local_addr: SocketAddr){
     let (r, w) = _socket.into_split();
     let mut proxy = HttpProxyTunnel{
-        // local_r: r,
-        // local_w: w,
-        // outgoing_sock: None,
-        // incoming_remote_addr: _addr.to_string(),
         outgoing_local_addr: local_addr,
-        buf: vec![0u8; 4096]
+        buf: vec![0u8; 8192]
     };
     proxy.start(r, w).await;
 }

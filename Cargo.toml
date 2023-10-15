@@ -4,7 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[build]
+rustflags = ["cfg", "tokio_unstable"]
 
 [dependencies]
-tokio = { version = "1.33", features = ["full"] }
+tokio = { version = "1.33", features = ["rt-multi-thread", "io-util","net","time","macros", "sync", "tracing"] }
 tokio-util = { version = "0.7.9"}
+console-subscriber = "0.1.5"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+

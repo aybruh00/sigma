@@ -1,18 +1,18 @@
-// #![feature(cell_leak)]
-// use std::cell::RefCell;
-// use std::sync::RwLock;
 use std::sync::Arc;
-use std::net::SocketAddr::{V4, V6};
+use std::net::SocketAddr::{self, V4, V6};
+use std::time::Duration;
+
 use tokio::sync::Mutex;
 use tokio::net::{TcpSocket, TcpStream, lookup_host};
 use tokio::io::{self, copy};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+
 use tokio_util::sync::CancellationToken as CT;
+use tokio::time::timeout;
+
 
 pub struct HttpProxyTunnel {
-    // pub local_r: OwnedReadHalf,
-    // pub local_w: OwnedWriteHalf,
-    pub outgoing_local_addr: String,
+    pub outgoing_local_addr: SocketAddr,
     pub buf: Vec<u8>
 }
 
@@ -27,9 +27,19 @@ impl HttpProxyTunnel {
         let mut token = CT::new();
 
         loop {
-            _ = local_r.readable().await?;
+            if let Err(e) = timeout(Duration::from_millis(10*1000), local_r.readable()).await {
+                // Timeout occured 
+                // Cancel tasks
+                token.cancel();
+                println!("Exiting connection");
+                return Ok(());
+            }
+            // local_r.readable().await?;
             match local_r.try_read(&mut self.buf) {
-                Ok(0) => return Ok(()),
+                Ok(0) => {
+                    token.cancel();
+                    return Ok(());
+                }
                 Ok(n) => {
                     token.cancel();
                     token = CT::new();
@@ -45,78 +55,25 @@ impl HttpProxyTunnel {
                         tokio::spawn( async move {
                             HttpProxyTunnel::stream_remote_to_client(remote_r, cloned_writer, cloned_token).await;
                         });
-
-                        // loop {
-                        //     match local_w.try_borrow_mut() {
-                        //         Err(_) => continue,
-                        //         Ok(writer) => {
-                        //             tokio::spawn( async move {
-                        //                 HttpProxyTunnel::stream_remote_to_client(remote_r, writer, cloned_token).await;
-                        //             });
-                        //             break;
-                        //         }
-                        //     }
-                        // }
-
                         io::copy_buf(&mut &self.buf[..n], remote_w.as_mut().unwrap()).await?;
                     }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                Err(e) => return Err(e),
-            };
-            
-
-            /*
-            tokio::select! {
-                _ = self.local_r.readable()  => {
-                    match self.local_r.try_read(&mut (*self.buf)) {
-                        Ok(0) => {
-                            println!("Closed"); 
-                            return Ok(());
-                        }
-                        Ok(n) => {
-                            if let Some(s) = self.process_request(n).await {
-                                let (a, b) = s.into_split();
-                                remote_r = Some(a);
-                                remote_w = Some(b);
-                            }
-                            io::copy_buf(&mut &self.buf[..n], remote_w.as_mut().unwrap()).await;
-                            // let mut bytes_written = 0;
-                            // while bytes_written < n {
-                            //     remote_w.as_ref().unwrap().writable().await;
-                            //     if let Ok(t) = remote_w
-                            //                         .as_mut()
-                            //                         .unwrap()
-                            //                         .try_write(&self.buf[bytes_written..n]) 
-                            //     {
-                            //         bytes_written += t;
-                            //     }
-                            // }
-                        }
-                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                            continue;
-                        }
-                        Err(e) => {
-                            println!("{}", e);
-                            return Err(e);
-                        }
-                    }
+                Err(e) => {
+                    token.cancel();
+                    return Err(e);
                 }
-
-                _ = async {
-                    copy(remote_r.as_mut().unwrap(), &mut self.local_w).await;
-                }, if remote_r.is_some() => {}
             };
-            */
         }
         Ok(())
     }
 
     async fn stream_remote_to_client(mut remote_r: Option<OwnedReadHalf>, mut local_w: Arc<Mutex<OwnedWriteHalf>>, token: CT) {
-        // if !remote_r.is_some() {return ();}
-        // let writer = &mut *(local_w.write().unwrap());
-        // tokio::pin!(writer);
+        // if remote_r.is_none() {return ();}
+
         let writer = &mut *(local_w.lock().await);
+        // let operation = async { copy(remote_r.as_mut().unwrap(), writer).await; };
+        // tokio::pin!(operation);
 
         loop {
             tokio::select!{
@@ -124,12 +81,8 @@ impl HttpProxyTunnel {
                     return ();
                     // finished task
                 }
+                // _ = &mut operation => {yield_now();}
                 _ = async {
-                    // let mutarc = Arc::get_mut(&mut local_w);
-                    // if mutarc.is_some() {
-                    //     copy(remote_r.as_mut().unwrap(), mutarc.unwrap()).await;
-                    // }
-
                     copy(remote_r.as_mut().unwrap(), writer).await;
                 }, if remote_r.is_some() => {}
             };
@@ -160,8 +113,13 @@ impl HttpProxyTunnel {
         }
 
         if endl_found {
-            let hostname = std::str::from_utf8(&self.buf[host_name_idx..endl_idx]).unwrap();
-            let conn_res = self.connect_remote(hostname).await;
+            let hostname = String::from(std::str::from_utf8(&self.buf[host_name_idx..endl_idx]).unwrap());
+            let sockaddr = self.outgoing_local_addr.clone();
+            let handle: tokio::task::JoinHandle<io::Result<TcpStream>> = tokio::spawn(async move {
+                Self::connect_remote(sockaddr, hostname).await
+            });
+            let conn_res = handle.await.unwrap();
+            // let conn_res = self.connect_remote(hostname).await;
             if let Ok(_) = conn_res {
                 return Some(conn_res.unwrap());
             }
@@ -169,18 +127,18 @@ impl HttpProxyTunnel {
         None
     }
 
-    async fn connect_remote (&self, hostname: &str) -> tokio::io::Result<TcpStream> {
+    async fn connect_remote (sockaddr: SocketAddr, hostname: String) -> io::Result<TcpStream> {
         for host in lookup_host(String::from(hostname)+":80").await? {
             match host {
                 V4(_) => {
                     let remote_sock = TcpSocket::new_v4()?;
-                    remote_sock.bind((self.outgoing_local_addr.clone()+":0").parse().unwrap());
+                    remote_sock.bind(sockaddr);
                     return remote_sock.connect(host).await;
                 }
                 V6(_) => {
                     continue;
                     // let remote_sock = TcpSocket::new_v6()?;
-                    // remote_sock.bind((self.outgoing_local_addr.clone()+":0").parse().unwrap());
+                    // remote_sock.bind(self.outgoing_local_addr);
                     // return remote_sock.connect(host).await;
                 }
             }
