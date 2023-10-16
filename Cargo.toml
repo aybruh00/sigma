@@ -10,7 +10,7 @@ rustflags = ["cfg", "tokio_unstable"]
 [dependencies]
 tokio = { version = "1.33", features = ["rt-multi-thread", "io-util","net","time","macros", "sync", "tracing"] }
 tokio-util = { version = "0.7.9"}
+
+[test-dependencies]
 console-subscriber = "0.1.5"
-tracing = "0.1"
-tracing-subscriber = "0.3"
 

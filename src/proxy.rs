@@ -17,8 +17,9 @@ pub struct HttpProxyTunnel {
 }
 
 impl HttpProxyTunnel {
-    pub async fn start(&mut self, client_r: OwnedReadHalf, client_w: OwnedWriteHalf) {
-        self.read_from_client(client_r, Arc::new(Mutex::new(client_w))).await; 
+    pub async fn start(&mut self, client_r: OwnedReadHalf, client_w: OwnedWriteHalf) -> io::Result<()> {
+        self.read_from_client(client_r, Arc::new(Mutex::new(client_w))).await?; 
+        Ok(())
     } 
 
     async fn read_from_client(&mut self, local_r: OwnedReadHalf, local_w: Arc<Mutex<OwnedWriteHalf>>) -> io::Result<()> {
@@ -27,7 +28,7 @@ impl HttpProxyTunnel {
         let mut token = CT::new();
 
         loop {
-            if let Err(e) = timeout(Duration::from_millis(10*1000), local_r.readable()).await {
+            if let Err(_e) = timeout(Duration::from_millis(10*100), local_r.readable()).await {
                 // Timeout occured 
                 // Cancel tasks
                 token.cancel();
@@ -42,12 +43,12 @@ impl HttpProxyTunnel {
                 }
                 Ok(n) => {
                     token.cancel();
-                    token = CT::new();
 
                     if let Some(s) = self.process_request(n).await {
                         let (a,b) = s.into_split();
                         remote_r = Some(a);
                         remote_w = Some(b);
+                        token = CT::new();
                         
                         let cloned_token = token.clone();
                         let cloned_writer = local_w.clone();
@@ -56,6 +57,7 @@ impl HttpProxyTunnel {
                             HttpProxyTunnel::stream_remote_to_client(remote_r, cloned_writer, cloned_token).await;
                         });
                         io::copy_buf(&mut &self.buf[..n], remote_w.as_mut().unwrap()).await?;
+                        remote_w.as_ref().unwrap().shutdown();
                     }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => continue,
@@ -65,15 +67,11 @@ impl HttpProxyTunnel {
                 }
             };
         }
-        Ok(())
     }
 
-    async fn stream_remote_to_client(mut remote_r: Option<OwnedReadHalf>, mut local_w: Arc<Mutex<OwnedWriteHalf>>, token: CT) {
-        // if remote_r.is_none() {return ();}
-
+    async fn stream_remote_to_client(mut remote_r: Option<OwnedReadHalf>, local_w: Arc<Mutex<OwnedWriteHalf>>, token: CT) {
+        if remote_r.is_none() {return ();}
         let writer = &mut *(local_w.lock().await);
-        // let operation = async { copy(remote_r.as_mut().unwrap(), writer).await; };
-        // tokio::pin!(operation);
 
         loop {
             tokio::select!{
@@ -81,9 +79,8 @@ impl HttpProxyTunnel {
                     return ();
                     // finished task
                 }
-                // _ = &mut operation => {yield_now();}
                 _ = async {
-                    copy(remote_r.as_mut().unwrap(), writer).await;
+                    let _ = copy(remote_r.as_mut().unwrap(), writer).await;
                 }, if remote_r.is_some() => {}
             };
         }
@@ -132,7 +129,7 @@ impl HttpProxyTunnel {
             match host {
                 V4(_) => {
                     let remote_sock = TcpSocket::new_v4()?;
-                    remote_sock.bind(sockaddr);
+                    remote_sock.bind(sockaddr)?;
                     return remote_sock.connect(host).await;
                 }
                 V6(_) => {
